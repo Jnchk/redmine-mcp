@@ -1,0 +1,11 @@
+# build output
+/redmine-mcp
+/bin/
+
+# test artifacts
+*.test
+*.out
+coverage.*
+
+# local secrets
+.env
