@@ -1,5 +1,7 @@
 # redmine-mcp
 
+[![CI](https://github.com/Jnchk/redmine-mcp/actions/workflows/ci.yml/badge.svg)](https://github.com/Jnchk/redmine-mcp/actions/workflows/ci.yml)
+
 MCP server for Redmine 3.4.x and newer, written in Go. One process serves one Redmine server. Reads and writes
 issues, comments, attachments, and time entries; resolves human names (`"In Progress"`, `"alice"`, `"me"`) to ids
 server-side and returns compact plain text instead of raw JSON.
@@ -19,7 +21,7 @@ Go 1.26.4. Dependencies: only `github.com/modelcontextprotocol/go-sdk`.
 
 | Variable | Default | Meaning |
 |---|---|---|
-| `REDMINE_URL` | required | `https://host` or `https://host/redmine` (sub-URI ok) |
+| `REDMINE_URL` | required | `https://redmine.example.com` or `https://redmine.example.com/redmine` (sub-URI ok) |
 | `REDMINE_API_KEY` | required | from **My account → API access key** |
 | `REDMINE_INSECURE` | `false` | skip TLS verification (self-signed servers) |
 | `REDMINE_READ_ONLY` | `false` | disable create/update/log_time |
@@ -102,3 +104,7 @@ Client config (opencode example, stdio):
 - User-name resolution needs an admin API key (`/users.json` is admin-only); otherwise use numeric ids or `me`.
 - `search_issues` with `q` cannot be combined with the other filters — different Redmine endpoint.
 - Not yet tested against a live Redmine; the integration test in the design doc is still pending.
+
+## License
+
+MIT — see [LICENSE](LICENSE).

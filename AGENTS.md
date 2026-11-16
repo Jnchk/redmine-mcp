@@ -35,7 +35,7 @@ go test ./internal/redmine -run TestResolve       # one rule set
 
 ## Redmine 3.4 traps already handled — don't regress
 
-- Base URL may contain a sub-URI (`https://host/redmine`). `Client` joins by string concat; `url.ResolveReference` would drop the prefix.
+- Base URL may contain a sub-URI (`https://redmine.example.com/redmine`). `Client` joins by string concat; `url.ResolveReference` would drop the prefix.
 - 422 bodies carry `errors[]`; surface those strings verbatim.
 - `subject` filtering matches the subject only; `q` uses `/search.json` and cannot be combined with filters.
 - Textile is the 3.4 default. Only the prompt hint changes with `REDMINE_TEXT_FORMATTING`.

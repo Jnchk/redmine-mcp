@@ -101,7 +101,7 @@ Environment first (matches how MCP clients pass credentials), a few flags for tr
 
 | Var / flag | Default | Meaning |
 |---|---|---|
-| `REDMINE_URL` | — (required) | `https://host` or `https://host/redmine` (sub-URI allowed). Trailing slash stripped. |
+| `REDMINE_URL` | — (required) | `https://redmine.example.com` or `https://redmine.example.com/redmine` (sub-URI allowed). Trailing slash stripped. |
 | `REDMINE_API_KEY` | — (required) | Sent as `X-Redmine-API-Key`. Never logged, never echoed back. |
 | `REDMINE_INSECURE` | `false` | Skip TLS verification (self-signed corporate installs). |
 | `REDMINE_TIMEOUT` | `45s` | Per-request client timeout. |
@@ -122,7 +122,7 @@ Startup sequence:
 2. `GET /users/current.json` — proves key, TLS, sub-URI and permissions are right. Log `connected to <url> as <login> (<admin|non-admin>)` to stderr.
 3. Register tools. If read-only, write tools are still listed but return an error explaining the mode (listing them helps the model plan, and the error is honest).
 
-Base-URL pitfall (sub-URI installs are common on 3.4): **do not** use `url.ResolveReference` with a relative path — `https://host/redmine` + `issues.json` becomes `https://host/issues.json`. Build with `url.JoinPath(base, "issues.json")` or normalize the base to end in `/` once at startup.
+Base-URL pitfall (sub-URI installs are common on 3.4): **do not** use `url.ResolveReference` with a relative path — `https://redmine.example.com/redmine` + `issues.json` becomes `https://redmine.example.com/issues.json`. Build with `url.JoinPath(base, "issues.json")` or normalize the base to end in `/` once at startup.
 
 ---
 
