@@ -54,6 +54,12 @@ func TestFromEnvValidation(t *testing.T) {
 		{name: "non-loopback without token", env: map[string]string{"MCP_TRANSPORT": "http", "MCP_ADDR": "0.0.0.0:8080"}, want: "MCP_TOKEN"},
 		{name: "non-loopback with token", env: map[string]string{"MCP_TRANSPORT": "http", "MCP_ADDR": "0.0.0.0:8080", "MCP_TOKEN": "t"}, want: ""},
 		{name: "loopback without token", env: map[string]string{"MCP_TRANSPORT": "http"}, want: ""},
+		{name: "multi loopback without token", env: map[string]string{"MCP_TRANSPORT": "http", "MCP_ADDR": "127.0.0.1:8080, [::1]:8081"}, want: ""},
+		{name: "multi with one non-loopback", env: map[string]string{"MCP_TRANSPORT": "http", "MCP_ADDR": "127.0.0.1:8080,0.0.0.0:9090"}, want: "MCP_TOKEN"},
+		{name: "multi with token", env: map[string]string{"MCP_TRANSPORT": "http", "MCP_ADDR": "127.0.0.1:8080,0.0.0.0:9090", "MCP_TOKEN": "t"}, want: ""},
+		{name: "missing port", env: map[string]string{"MCP_TRANSPORT": "http", "MCP_ADDR": "127.0.0.1"}, want: "MCP_ADDR"},
+		{name: "empty entries ignored", env: map[string]string{"MCP_TRANSPORT": "http", "MCP_ADDR": " , 127.0.0.1:8080 , "}, want: ""},
+		{name: "only separators", env: map[string]string{"MCP_TRANSPORT": "http", "MCP_ADDR": " , , "}, want: "no addresses"},
 		{name: "hostname loopback", env: map[string]string{"MCP_TRANSPORT": "http", "MCP_ADDR": "localhost:9000"}, want: ""},
 		{name: "path without slash", env: map[string]string{"MCP_TRANSPORT": "http", "MCP_PATH": "mcp"}, want: "MCP_PATH"},
 		{name: "limit too small", env: map[string]string{"REDMINE_DEFAULT_LIMIT": "0"}, want: "REDMINE_DEFAULT_LIMIT"},
@@ -84,5 +90,26 @@ func TestFromEnvValidation(t *testing.T) {
 				t.Fatalf("err = %v, want substring %q", err, tc.want)
 			}
 		})
+	}
+}
+
+func TestListenAddrs(t *testing.T) {
+	cases := map[string][]string{
+		"":                           nil,
+		"127.0.0.1:8080":             {"127.0.0.1:8080"},
+		"127.0.0.1:8080,10.0.0.5:80": {"127.0.0.1:8080", "10.0.0.5:80"},
+		" a:1 , b:2 ,":               {"a:1", "b:2"},
+		" , ":                        nil,
+	}
+	for in, want := range cases {
+		got := (&Config{Addr: in}).ListenAddrs()
+		if len(got) != len(want) {
+			t.Fatalf("ListenAddrs(%q) = %v, want %v", in, got, want)
+		}
+		for i := range want {
+			if got[i] != want[i] {
+				t.Fatalf("ListenAddrs(%q) = %v, want %v", in, got, want)
+			}
+		}
 	}
 }

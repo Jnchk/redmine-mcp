@@ -96,13 +96,37 @@ func (c *Config) Validate() error {
 		if !strings.HasPrefix(c.Path, "/") {
 			return fmt.Errorf("MCP_PATH must start with /")
 		}
-		if c.Token == "" && !loopback(c.Addr) {
-			return fmt.Errorf("MCP_ADDR %q is not loopback: set MCP_TOKEN to require a bearer token", c.Addr)
+		addrs := c.ListenAddrs()
+		if len(addrs) == 0 {
+			return fmt.Errorf("MCP_ADDR contains no addresses")
+		}
+		nonLoopback := ""
+		for _, a := range addrs {
+			if _, _, err := net.SplitHostPort(a); err != nil {
+				return fmt.Errorf("MCP_ADDR %q: %w", a, err)
+			}
+			if nonLoopback == "" && !loopback(a) {
+				nonLoopback = a
+			}
+		}
+		if c.Token == "" && nonLoopback != "" {
+			return fmt.Errorf("MCP_ADDR includes non-loopback %q: set MCP_TOKEN to require a bearer token", nonLoopback)
 		}
 	default:
 		return fmt.Errorf("MCP_TRANSPORT must be stdio or http, got %q", c.Transport)
 	}
 	return nil
+}
+
+// ListenAddrs splits MCP_ADDR on commas; empty entries are ignored.
+func (c *Config) ListenAddrs() []string {
+	var out []string
+	for _, a := range strings.Split(c.Addr, ",") {
+		if a = strings.TrimSpace(a); a != "" {
+			out = append(out, a)
+		}
+	}
+	return out
 }
 
 // IsPlainHTTP reports whether the Redmine URL is unencrypted, for a startup warning.

@@ -80,8 +80,12 @@ case "http":
     )
     mux := http.NewServeMux()
     mux.Handle(cfg.Path, authMiddleware(cfg.Token, handler))
-    hs := &http.Server{Addr: cfg.Addr, Handler: mux, ReadHeaderTimeout: 10 * time.Second}
-    err = runWithShutdown(ctx, hs)
+    // every address is bound before the first request is served, so a bad
+    // entry aborts startup instead of leaving half the listeners up
+    for _, addr := range cfg.ListenAddrs() {
+        ln, err := net.Listen("tcp", addr) // fatal on error
+        go (&http.Server{Handler: mux, ReadHeaderTimeout: 10 * time.Second}).Serve(ln)
+    }
 }
 ```
 
@@ -111,9 +115,9 @@ Environment first (matches how MCP clients pass credentials), a few flags for tr
 | `REDMINE_TEXT_FORMATTING` | `textile` | `textile` or `markdown`; only changes the guidance in the server instructions. |
 | `REDMINE_MAX_UPLOAD` | `25 MiB` | Reject larger attachment paths before opening them. |
 | `MCP_TRANSPORT` / `--transport` | `stdio` | `stdio` or `http`. |
-| `MCP_ADDR` / `--addr` | `127.0.0.1:8080` | HTTP listen address. |
+| `MCP_ADDR` / `--addr` | `127.0.0.1:8080` | HTTP listen address(es), comma-separated. |
 | `MCP_PATH` | `/mcp` | HTTP endpoint path. |
-| `MCP_TOKEN` | — | If set, required as `Authorization: Bearer <token>`. **Mandatory** when `MCP_ADDR` is not loopback. |
+| `MCP_TOKEN` | — | If set, required as `Authorization: Bearer <token>`. **Mandatory** when any `MCP_ADDR` entry is not loopback. |
 | `--read-only` | — | Flag equivalent of `REDMINE_READ_ONLY`. |
 
 Startup sequence:

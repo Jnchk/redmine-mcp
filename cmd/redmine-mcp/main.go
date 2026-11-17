@@ -7,6 +7,7 @@ import (
 	"flag"
 	"fmt"
 	"log/slog"
+	"net"
 	"net/http"
 	"os"
 	"os/signal"
@@ -91,15 +92,43 @@ func main() {
 		)
 		mux := http.NewServeMux()
 		mux.Handle(cfg.Path, withToken(cfg.Token, handler))
-		hs := &http.Server{Addr: cfg.Addr, Handler: mux, ReadHeaderTimeout: 10 * time.Second}
+
+		// Bind every address up front so a bad one fails startup, not half the listeners.
+		var listeners []net.Listener
+		for _, addr := range cfg.ListenAddrs() {
+			ln, listenErr := net.Listen("tcp", addr)
+			if listenErr != nil {
+				for _, open := range listeners {
+					_ = open.Close()
+				}
+				logger.Error("listen", "addr", addr, "err", listenErr)
+				os.Exit(1)
+			}
+			listeners = append(listeners, ln)
+		}
+
+		serveCtx, stopServing := context.WithCancel(ctx)
+		defer stopServing()
+
+		servers := make([]*http.Server, len(listeners))
+		errCh := make(chan error, len(listeners))
+		for i, ln := range listeners {
+			hs := &http.Server{Handler: mux, ReadHeaderTimeout: 10 * time.Second}
+			servers[i] = hs
+			logger.Info("listening", "addr", ln.Addr().String(), "path", cfg.Path)
+			go func() { errCh <- hs.Serve(ln) }()
+		}
 		go func() {
-			<-ctx.Done()
+			<-serveCtx.Done()
 			shutdown, done := context.WithTimeout(context.Background(), 5*time.Second)
 			defer done()
-			_ = hs.Shutdown(shutdown)
+			for _, hs := range servers {
+				_ = hs.Shutdown(shutdown)
+			}
 		}()
-		logger.Info("listening", "addr", cfg.Addr, "path", cfg.Path)
-		err = hs.ListenAndServe()
+
+		err = <-errCh
+		stopServing()
 		if errors.Is(err, http.ErrServerClosed) {
 			err = nil
 		}

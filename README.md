@@ -31,7 +31,7 @@ Go 1.26.4. Dependencies: only `github.com/modelcontextprotocol/go-sdk`.
 | `REDMINE_MAX_UPLOAD` | `25 MiB` | attachment size cap (bytes) |
 | `REDMINE_TEXT_FORMATTING` | `textile` | `textile` or `markdown` (prompt hint only) |
 | `MCP_TRANSPORT` | `stdio` | `stdio` or `http` |
-| `MCP_ADDR` | `127.0.0.1:8080` | HTTP listen address |
+| `MCP_ADDR` | `127.0.0.1:8080` | HTTP listen address(es), comma-separated (`127.0.0.1:8080,10.0.0.5:8080`) |
 | `MCP_PATH` | `/mcp` | HTTP endpoint path |
 | `MCP_TOKEN` | — | bearer token; required for a non-loopback address |
 
@@ -53,6 +53,9 @@ Streamable HTTP (stateless, JSON responses):
 ```bash
 REDMINE_URL=https://redmine.example.com REDMINE_API_KEY=xxx \
 MCP_TRANSPORT=http MCP_ADDR=127.0.0.1:8080 MCP_TOKEN=change-me ./redmine-mcp
+
+# several listeners; one non-loopback entry makes MCP_TOKEN mandatory
+MCP_TRANSPORT=http MCP_ADDR=127.0.0.1:8080,10.0.0.5:8080 MCP_TOKEN=change-me ./redmine-mcp
 ```
 
 ```bash
