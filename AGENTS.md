@@ -41,7 +41,7 @@ go test ./internal/redmine -run TestResolve       # one rule set
 - Textile is the 3.4 default. Only the prompt hint changes with `REDMINE_TEXT_FORMATTING`.
 - Closing = a status with `is_closed`; there is no issue-delete API.
 - `/users.json` is admin-only: degrade to numeric ids, never fail the whole call.
-- Attaching to an **existing** issue is intentionally rejected (3.4 may replace the attachment set on `PUT`). Do not "fix" it without a real-server test.
+- Attaching to an **existing** issue is supported: `create_issue` and `update_issue` both take `attach_paths` and `attach_upload_ids`. One manual 3.4.x observation recorded in docs/01_staging_upload.md §5 saw `issue[uploads]` on `PUT` behave **additively** (the earlier attachment stayed); no automated test covers it, so do not "guard" against a replace but also do not claim it verified.
 
 ## Tests
 
