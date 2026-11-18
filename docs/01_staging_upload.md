@@ -475,7 +475,7 @@ python3 skills/mcp-upload/scripts/mcp_upload.py --server redmine --path ./report
 | `internal/tools/issues.go` | `attach_upload_ids`, `claimUploads` / `releaseUploads` |
 | `internal/tools/meta.go` | `whoami` prints `staging: …` |
 | `cmd/redmine-mcp/main.go` | store creation, sweeper goroutine, route registration, startup log |
-| `skills/redmine-upload/SKILL.md` | the agent-facing recipe for this server |
+| `skills/redmine/SKILL.md` | the agent-facing recipe for this server |
 | mcp-gateway `skills/mcp-upload/` | the helper (stdlib, streaming) and its tests — other repository |
 
 Verified end to end: real binary + fake Redmine + real helper — upload → `create_issue` → Redmine receives
