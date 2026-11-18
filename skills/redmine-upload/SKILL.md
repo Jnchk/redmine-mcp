@@ -9,13 +9,13 @@ description: Attach a file that lives on this machine to a Redmine issue through
 machine and the upstream is elsewhere, stage it through the gateway; the bytes travel over HTTP and never
 through the model's context.
 
-In this repository the helper lives at `docs/gateway-upload/scripts/mcp_upload.py`; when installed as an
-OpenCode skill, the same file sits under `<skill-dir>/scripts/mcp_upload.py`.
+The helper is the neutral `mcp-upload` skill (in the `mcp-gateway` repository). When installed it lives at
+`~/.config/opencode/skills/mcp-upload/scripts/mcp_upload.py`; this skill only documents the Redmine side.
 
 ## Two steps
 
 ```bash
-python3 docs/gateway-upload/scripts/mcp_upload.py --server redmine --path ./report.pdf
+python3 ~/.config/opencode/skills/mcp-upload/scripts/mcp_upload.py --server redmine --path ./report.pdf
 # 9f1c0b7a4e2d4c3b8a5f6e7d0c1b2a39
 ```
 
