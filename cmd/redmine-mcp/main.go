@@ -174,8 +174,8 @@ func instructions(cfg *config.Config, u *redmine.User) string {
 	}
 	extra := ""
 	if cfg.Transport == "http" && cfg.UploadDir != "" {
-		extra = fmt.Sprintf("\n- A file on the client machine: POST it to this server's %s route with the upload helper "+
-			"(`skills/redmine-mcp/scripts/mcp_upload.py`), then pass the returned id as attach_upload_ids. "+
+		extra = fmt.Sprintf("\n- A file on the client machine: stage it through mcp-gateway's upload route "+
+			"(the `mcp-upload` skill, POST %s), then pass the returned id as attach_upload_ids. "+
 			"Never base64 a file into a tool call.", cfg.UploadPath)
 	}
 	return fmt.Sprintf(`Redmine at %s. Signed in as %s. Mode: %s.

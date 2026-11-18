@@ -1,6 +1,6 @@
 # AGENTS.md
 
-MCP server (Go) exposing one Redmine 3.4+ instance. Design: `docs/00_basic_design.md`. Client-side uploads (designed, not implemented): `docs/01_staging_upload.md`. Usage: `README.md`.
+MCP server (Go) exposing one Redmine 3.4+ instance. Design: `docs/00_basic_design.md`. Client-side uploads (helper lives in mcp-gateway): `docs/01_staging_upload.md`. Usage: `README.md`.
 
 ## Commands
 
@@ -12,7 +12,6 @@ gofmt -w .    # the only formatter; no Makefile, no CI, no golangci config
 
 go test ./internal/tools -run TestWriteTools -v   # single test
 go test ./internal/redmine -run TestResolve       # one rule set
-python3 -m unittest discover -s skills/redmine-mcp/scripts -v   # upload helper
 ```
 
 `go.mod` pins `go 1.26.4`; keep it. Sole direct dependency: `github.com/modelcontextprotocol/go-sdk`.

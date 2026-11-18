@@ -13,11 +13,9 @@ Full design: [docs/00_basic_design.md](docs/00_basic_design.md).
 ```bash
 go build -o redmine-mcp ./cmd/redmine-mcp
 go test ./...
-python3 -m unittest discover -s skills/redmine-mcp/scripts   # upload helper
 ```
 
-Go 1.26.4. Dependencies: only `github.com/modelcontextprotocol/go-sdk`. The helper is Python 3.8+,
-standard library only.
+Go 1.26.4. Dependencies: only `github.com/modelcontextprotocol/go-sdk`.
 
 ## Configure
 
@@ -102,17 +100,18 @@ server's machine for HTTP. When the client runs elsewhere, stage the file first:
 
 ```bash
 # 1) upload: prints one line — the 32-hex staging id
-python3 skills/redmine-mcp/scripts/mcp_upload.py --server redmine --path ./report.pdf
+#    run from the root of your mcp-gateway clone
+python3 skills/mcp-upload/scripts/mcp_upload.py --server redmine --path ./report.pdf
 # 9f1c0b7a4e2d4c3b8a5f6e7d0c1b2a39
 
 # 2) attach: pass the id, not the file
 #    create_issue(..., attach_upload_ids: ["9f1c0b7a4e2d4c3b8a5f6e7d0c1b2a39"])
 ```
 
-`--server NAME` picks an entry from the skill's own `config.json` — `~/.config/redmine-mcp/config.json`
-on every platform (copy `skills/redmine-mcp/config.example.json`). It holds `url` and an optional `token`
-and is read only by the helper, so the same script works under any agent. Flags and `REDMINE_MCP_URL` /
-`REDMINE_MCP_TOKEN` override it.
+The helper is the `mcp-upload` skill of [mcp-gateway](https://github.com/Jnchk/mcp-gateway), Python 3.8+
+and standard library only; `--server redmine` names the gateway's upstream entry. It reads its own client
+config `~/.config/mcp-gateway/client.json` (gateway `url` + `token`) and never touches the gateway's
+`config.json`; `MCP_GATEWAY_CONFIG`, `MCP_GATEWAY_URL` and `MCP_GATEWAY_TOKEN` override it.
 
 curl equivalent:
 

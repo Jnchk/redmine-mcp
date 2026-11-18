@@ -2,10 +2,10 @@
 
 | | |
 |---|---|
-| Status | **Implemented** (`internal/upload`, `mcp_upload.py`) |
+| Status | **Implemented** (`internal/upload`; client = mcp-gateway's `mcp-upload` skill) |
 | Applies to | HTTP transport only (stdio keeps `attach_paths`) |
-| Related | `00_basic_design.md` (server contract), `../README.md` (usage) |
-| Language | Go 1.26.4 (server), Python 3.8+ (client helper) |
+| Related | `00_basic_design.md` (server contract), `../README.md` (usage), mcp-gateway `skills/mcp-upload` |
+| Language | Go 1.26.4 (server), Python 3.8+ (client helper, other repo) |
 
 ---
 
@@ -49,6 +49,9 @@ client (agent host)                 redmine-mcp (server host)              Redmi
                                    └ delete <id>/
         ◄── "#42 created ..." ─────
 ```
+
+The helper posts to the **gateway**, which forwards the body to this route with that instance's
+credentials; `curl` (§10) reaches the route directly. The rest of the diagram is the route's shape.
 
 Three properties that matter:
 
@@ -195,7 +198,7 @@ Two pieces of model-facing text change with the code, or nobody will ever find t
    "`attach_paths`: files on this server's host; `attach_upload_ids`: ids from `POST /upload` on the same
    server, single-use, expire in `MCP_UPLOAD_TTL`."
 2. **Server instructions** (`mcp.ServerOptions.Instructions`): one line — "If the file lives on the
-   client machine, stage it with the helper (`skills/redmine-mcp/scripts/mcp_upload.py`) and pass the id;
+   client machine, stage it through mcp-gateway's `mcp-upload` skill and pass the id;
    never base64 a file into a tool call."
 
 Neither text may mention the token or repeat the flow in prose; the helper's `--help` is the manual.
@@ -230,8 +233,8 @@ MCP_ADDR=127.0.0.1:8888,10.0.0.5:8888
 MCP_UPLOAD_DIR=/tmp/redmine-mcp-neo
 ```
 
-One env file per instance. The `--server` name the helper uses is the entry in the skill's own
-`config.json` (§7.1); it is deliberately **not** tied to any agent's config key, so the same name works
+One env file per instance. The `--server` name the helper uses is the gateway upstream name (§7.1); it is
+deliberately **not** tied to any agent's config key, so the same name works
 under every client.
 
 Startup: create the directory, warn (not fail) when it lives on a world-writable path, remove expired
@@ -239,68 +242,74 @@ files, start the sweeper. No new flag.
 
 ---
 
-## 7. Client helper — `skills/redmine-mcp/scripts/mcp_upload.py`
+## 7. Client helper — mcp-gateway's `mcp-upload` skill
+
+The client side is **not** in this repository. It is the neutral `mcp-upload` skill of
+[mcp-gateway](https://github.com/Jnchk/mcp-gateway): `skills/mcp-upload/scripts/mcp_upload.py`. It stages a
+file for any upstream implementing that gateway's `POST /upload/<server>` route, so `--server redmine` is
+just the gateway entry name. One copy in one repository, one release cadence; this repository documents
+only the route it serves.
 
 **Why Python:** the agent runs on Windows, macOS and Linux; a shell script would not. Stdlib only
-(`urllib`, `argparse`, `hashlib`, `mimetypes`, `pathlib`), no `pip install`, invoked as
-`python3 skills/redmine-mcp/scripts/mcp_upload.py` (`python` on Windows). Each server lives in its own repo,
-so the helper is **copied** into `skills/<server>/scripts/` rather than shared as a package — the copy is
-small and it keeps each repo self-contained.
+(`urllib`, `argparse`, `pathlib`), no `pip install`, invoked as
+`python3 skills/mcp-upload/scripts/mcp_upload.py` (`python` on Windows).
 
 ```
-mcp_upload.py --path FILE [--server NAME] [--filename NAME]
-              [--url URL] [--token TOKEN] [--config PATH] [--json]
+mcp_upload.py --path FILE --server NAME [--filename NAME]
+              [--url URL] [--token TOKEN] [--config PATH] [--json] [--timeout SECONDS]
 ```
 
 | Flag | Default | Notes |
 |---|---|---|
 | `--path` | required | Any local path. `pathlib` handles `/` and `\`. |
-| `--server` | `redmine` | Entry in `config.json`; selects URL and token (§7.1). |
+| `--server` | required | Upstream name as the gateway knows it: `redmine`. |
 | `--filename` | basename of `--path` | Overrides the name Redmine shows. |
-| `--url` | `$REDMINE_MCP_URL`, then `config.json` | Base URL, e.g. `http://10.0.0.5:8080`; `/upload` is appended unless the URL already ends in it. |
-| `--token` | `$REDMINE_MCP_TOKEN`, then `config.json` | Never printed, never logged, masked as `***`. |
-| `--config` | `$XDG_CONFIG_HOME/redmine-mcp/config.json`, else `~/.config/redmine-mcp/config.json` (Windows: `%USERPROFILE%\.config\redmine-mcp\config.json`) | The skill's own file; no agent config is ever read. |
+| `--url` | `$MCP_GATEWAY_URL`, then client config | **Gateway** base URL, e.g. `http://10.0.0.5:8930`; the helper appends `/upload/<server>`. |
+| `--token` | `$MCP_GATEWAY_TOKEN`, then client config | Gateway token; never printed, never logged. |
+| `--config` | `$MCP_GATEWAY_CONFIG`, else `~/.config/mcp-gateway/client.json` | The client's own file; no agent config is ever read. |
 | `--json` | off | Print the full response object instead of the bare id. |
+| `--timeout` | `60` | Seconds. |
 
 ### 7.1 Where the URL and token come from
 
-The helper reads **its own file**, never an agent config:
+The helper reads **its own client config**, never an agent config:
 
-`$XDG_CONFIG_HOME/redmine-mcp/config.json` → `~/.config/redmine-mcp/config.json` →
-`%USERPROFILE%\.config\redmine-mcp\config.json` (Windows); `--config PATH` overrides.
+`$MCP_GATEWAY_CONFIG` → `$XDG_CONFIG_HOME/mcp-gateway/client.json` → `~/.config/mcp-gateway/client.json`
+(Windows: `%USERPROFILE%\.config\mcp-gateway\client.json`); `--config PATH` overrides.
 
 ```json
 {
-  "redmine":    { "url": "http://127.0.0.1:8888", "token": "28c8..." },
-  "redmine-sh": { "url": "http://127.0.0.1:8889" }
+  "url": "http://127.0.0.1:8930",
+  "token": "28c8...",
+  "servers": { "redmine": true, "redmine-sh": true }
 }
 ```
+
+`servers` is optional: when present, `--server` must name one of its keys. The file carries client
+credentials only — gateway address and token. Upstream credentials (Redmine's API key included) live in
+the gateway's own `config.json` and never reach the client. When `url` is absent the helper falls back to
+the `listen` addresses in that same file.
 
 Precedence, per value:
 
 | # | URL | Token |
 |---|---|---|
 | 1 | `--url` | `--token` |
-| 2 | `REDMINE_MCP_URL` | `REDMINE_MCP_TOKEN` |
-| 3 | `config.json` → `url` | `config.json` → `token` |
+| 2 | `MCP_GATEWAY_URL` | `MCP_GATEWAY_TOKEN` |
+| 3 | `client.json` → `url`, else `listen` | `client.json` → `token` |
 
 Rules:
 
-1. `url` is the server base; a trailing `/mcp` becomes `/upload`. An optional `upload_url` field
-   overrides that when the route is not at the default path.
-2. **`token` is optional.** When the server runs without one (§3), omit the field. When it is present,
-   the helper sends `Authorization: Bearer <token>`; a mismatch surfaces as `401`.
-3. A missing file is not an error — flags and environment may be enough. An unknown `--server` exits `2`
-   and lists the names it knows.
-4. On POSIX the file should be `0600`; the helper warns when it holds a token and is group/other-readable.
-5. Nothing is ever written back to the file.
+1. The URL is the **gateway**, not this server; the gateway forwards to `MCP_UPLOAD_PATH` (§6) with the
+   upstream's credentials.
+2. **`token` is optional** on both sides. When the gateway runs without one (§3), omit the field. When it
+   is present, the helper sends `Authorization: Bearer <token>`; a mismatch surfaces as `401`.
+3. A missing config file is an error (`exit 2`); flags and environment alone are not enough — the helper
+   needs a gateway URL.
+4. Nothing is ever written back to the file.
 
 Deliberately not the agent config: four clients ship four formats (`opencode.json`, `.mcp.json`,
-`mcp.json`, `config.toml`) with different interpolation rules, and that file is not ours. A 20-line file
-we own cannot break when a client changes its schema.
-
-If a token is needed, it is entered **once, here**, and the agent's MCP config carries its own copy or its
-own `{env:...}` reference — the helper does not care.
+`mcp.json`, `config.toml`) with different interpolation rules, and that file is not ours.
 
 Contract, because an agent parses it:
 
@@ -310,28 +319,28 @@ Contract, because an agent parses it:
 | Code | Meaning |
 |---|---|
 | `0` | printed an id |
-| `2` | bad arguments (missing `--path`, no URL, no token, unknown `--server`, `token_env` points at an unset variable) |
-| `3` | HTTP error; stderr is the server's one-line message verbatim |
-| `4` | local file error (missing, directory, unreadable, over the size cap before sending) |
+| `2` | bad arguments (missing `--path`, unreadable client config, unknown `--server`, no usable URL) |
+| `3` | HTTP error; stderr is the gateway's or server's one-line message verbatim |
+| `4` | local file error (missing, directory, unreadable, empty) |
 
 3. **Streams the body** in 64 KiB chunks with `Content-Length` from `os.stat` — no full load into RAM,
    no base64.
-4. **One retry** on connection reset before any byte is acknowledged; a `POST /upload` is a fresh staging
-   object, so the retry cannot duplicate an attachment.
+4. **One retry** on connection reset; a `POST /upload` is a fresh staging object, so the retry cannot
+   duplicate an attachment.
 5. **Never sends `Expect: 100-continue`** (some proxies in corporate networks mishandle it).
 6. **UTF-8 output**, `sys.stdout.reconfigure(encoding="utf-8")` on 3.7+ where available; the id is ASCII
    anyway.
 7. **Percent-encodes `--filename`** with `urllib.parse.quote(name, safe="")`; a Chinese filename must
    arrive intact (the server decodes it into `issue[uploads][][filename]`).
 8. **Windows**: uses `pathlib` for the local path and `os.stat` for the size; no `/dev/stdin`, no shell
-   redirection, no `curl` dependency. A path with spaces or backslashes works unquoted in the shell only
-   because the argument is passed as one argv element — say so in `--help`.
+   redirection, no `curl` dependency.
 
 The skill that wraps this is thin by design:
 
 ```
-SKILL.md: when the file is not on the MCP host, run skills/redmine-mcp/scripts/mcp_upload.py,
-          take the id from stdout, pass it as attach_upload_ids. Never base64 a file into a tool call.
+SKILL.md: when the file is not on the MCP host, run mcp-gateway's mcp-upload skill
+          (skills/mcp-upload/scripts/mcp_upload.py) with --server redmine, take the id from stdout,
+          pass it as attach_upload_ids. Never base64 a file into a tool call.
 ```
 
 ---
@@ -392,15 +401,15 @@ Unit (`httptest`, in-memory fake Redmine, same style as the existing suites):
 15. zero-byte body → `400 upload: empty body`, nothing stored.
 16. `whoami` prints `staging: <path> -> <dir> (ttl 15m)`, or `staging: disabled` when the dir is empty.
 
-Helper (`skills/redmine-mcp/scripts/test_mcp_upload.py`, stdlib `unittest`):
+Helper — lives in mcp-gateway as `skills/mcp-upload/scripts/`, tests included there:
 
 17. against a stub HTTP server: prints one line, exit `0`.
 18. HTTP 413 → exit `3`, stderr contains the server message, stdout empty.
 19. missing file → exit `4`.
 20. token never appears in stdout/stderr.
 21. `--filename 日志.txt` is percent-encoded on the wire and decoded by the server stub.
-22. `--server redmine` resolves `url` and `token` from a fixture `config.json`; an entry without
-    `token` sends no `Authorization` header; an unknown `--server` exits `2` and lists the known names.
+22. `--server redmine` resolves `url` and `token` from a fixture `client.json`; without `token` no
+    `Authorization` header is sent; an unknown `--server` exits `2` and lists the known names.
 
 Manual smoke:
 
@@ -409,7 +418,9 @@ curl -sS -X POST "http://127.0.0.1:8080/upload?filename=report.pdf" \
   -H "Authorization: Bearer $MCP_TOKEN" \
   -H 'Content-Type: application/octet-stream' \
   --data-binary @report.pdf
-python3 skills/redmine-mcp/scripts/mcp_upload.py --path ./report.pdf --url http://127.0.0.1:8080 --token "$MCP_TOKEN"
+# from your mcp-gateway clone
+python3 skills/mcp-upload/scripts/mcp_upload.py --server redmine --path ./report.pdf \
+  --url http://127.0.0.1:8930 --token "$GATEWAY_TOKEN"
 ```
 
 ---
@@ -422,11 +433,11 @@ python3 skills/redmine-mcp/scripts/mcp_upload.py --path ./report.pdf --url http:
 - `docs/00_basic_design.md` gains the three config vars, the `attach_upload_ids` input, and the security
   sentence, in the same change that lands the code (per `AGENTS.md`).
 - Same pattern is portable to the sibling servers (`reviewboard` diff upload, `obsitrace` note import):
-  copy `skills/redmine-mcp/scripts/mcp_upload.py` into each repo's `skills/<server>/scripts/` and keep the
-  endpoint shape identical. The repos stay independent by design; the copy is ~150 lines and is not worth
-  a shared package (and a shared package would pin four repos to one release cadence).
-- The helper is agent-agnostic (`config.json` + env, never a client config), so the same copy works
-  whether the agent is OpenCode, Claude Code, Cursor or a plain shell.
+  keep the endpoint shape identical and add the upstream to the gateway. **One** helper serves them all —
+  it lives in `mcp-gateway/skills/mcp-upload/` and takes `--server`; vendoring a copy into each repo was
+  the earlier plan and was dropped (§7), because copies drift.
+- The helper reads only its own `~/.config/mcp-gateway/client.json` plus environment, never an agent's
+  config, so it works the same under OpenCode, Claude Code, Cursor or a plain shell.
 
 ---
 
@@ -441,11 +452,12 @@ python3 skills/redmine-mcp/scripts/mcp_upload.py --path ./report.pdf --url http:
 
 **Resolved**
 
-- Helper location: `skills/redmine-mcp/scripts/`, copied per repo — the repos stay independent (§7).
+- Helper location: mcp-gateway's `skills/mcp-upload/` (single source, `--server` selects the upstream) —
+  not vendored here (§7).
 - Reuse after a failed attach: refused; the staged directory is deleted and the caller re-uploads (§4.5).
 - Transport encoding: raw `application/octet-stream`, **no multipart** — the only caller is the helper and
   `curl --data-binary` (§3).
-- Token: flags → environment → the skill's own `config.json`, where it is optional and entered once;
+- Token: flags → environment → the helper's own `client.json`, where it is optional and entered once;
   **no agent config is read** (§7.1). The server accepts unauthenticated requests when `MCP_TOKEN` is
   unset (§3).
 - Replication: not in the deployment model. Each host runs its own instance with a local directory (§4.10).
@@ -463,9 +475,8 @@ python3 skills/redmine-mcp/scripts/mcp_upload.py --path ./report.pdf --url http:
 | `internal/tools/issues.go` | `attach_upload_ids`, `claimUploads` / `releaseUploads` |
 | `internal/tools/meta.go` | `whoami` prints `staging: …` |
 | `cmd/redmine-mcp/main.go` | store creation, sweeper goroutine, route registration, startup log |
-| `skills/redmine-mcp/scripts/mcp_upload.py` | the helper (stdlib, streaming, agent-agnostic config) |
-| `skills/redmine-mcp/scripts/test_mcp_upload.py` | 8 tests against a stub server |
-| `skills/redmine-mcp/config.example.json` | template for `~/.config/redmine-mcp/config.json` |
+| `skills/redmine-upload/SKILL.md` | the agent-facing recipe for this server |
+| mcp-gateway `skills/mcp-upload/` | the helper (stdlib, streaming) and its tests — other repository |
 
 Verified end to end: real binary + fake Redmine + real helper — upload → `create_issue` → Redmine receives
 `uploads[0].token`, staging directory removed, `whoami` shows the staging line.

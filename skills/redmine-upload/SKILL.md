@@ -9,13 +9,15 @@ description: Attach a file that lives on this machine to a Redmine issue through
 machine and the upstream is elsewhere, stage it through the gateway; the bytes travel over HTTP and never
 through the model's context.
 
-The helper is the neutral `mcp-upload` skill (in the `mcp-gateway` repository). When installed it lives at
-`~/.config/opencode/skills/mcp-upload/scripts/mcp_upload.py`; this skill only documents the Redmine side.
+The helper is the neutral `mcp-upload` skill in the **mcp-gateway** repository:
+`skills/mcp-upload/scripts/mcp_upload.py`. Run it from your clone; if your agent has that skill
+installed, its copy is the same file. This skill only documents the Redmine side.
 
 ## Two steps
 
 ```bash
-python3 ~/.config/opencode/skills/mcp-upload/scripts/mcp_upload.py --server redmine --path ./report.pdf
+# run from the root of your mcp-gateway clone
+python3 skills/mcp-upload/scripts/mcp_upload.py --server redmine --path ./report.pdf
 # 9f1c0b7a4e2d4c3b8a5f6e7d0c1b2a39
 ```
 
@@ -32,8 +34,9 @@ await tools.gateway.call_tool({
 ## Rules
 
 - **Never base64 a file into a tool call.** The route exists exactly for that.
-- The script reads `~/.config/mcp-gateway/config.json` (or `$MCP_GATEWAY_CONFIG`): it uses `listen`,
-  `token`, and the `servers` map. `--server` must name one of those upstreams.
+- The script reads its client config `~/.config/mcp-gateway/client.json` (or `$MCP_GATEWAY_CONFIG`):
+  the gateway `url` and `token`. It never reads the gateway's own `config.json`. `--server` is any
+  upstream the gateway has, unless the client config adds a `servers` map to restrict it.
 - The id is **single use**, expires (`MCP_UPLOAD_TTL`, 15 minutes by default), and belongs to the
   upstream instance that staged it. Do not reuse it on another `server`.
 - Do not pass `--token` on the command line: it lands in shell history. It is read from the config.
