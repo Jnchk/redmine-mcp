@@ -44,8 +44,13 @@ await tools.gateway.call_tool({
     arguments: { project: "...", subject: "...", attach_paths: ["/abs/path/report.pdf"] } })
   ```
 
-- `create_issue` is the only tool that accepts `attach_upload_ids` today; `update_issue` attachments
-  are unsupported (Redmine 3.4 may replace the attachment set on update).
+- `create_issue` and `update_issue` both accept `attach_upload_ids`; other tools do not. Adding to an
+  existing issue leaves its current attachments in place:
+
+  ```js
+  await tools.gateway.call_tool({ server: "redmine", tool: "update_issue",
+    arguments: { id: 17151, attach_upload_ids: ["9f1c0b7a4e2d4c3b8a5f6e7d0c1b2a39"] } })
+  ```
 - On failure the staged copy is deleted: upload again rather than retrying the id.
 
 ## Exit codes
