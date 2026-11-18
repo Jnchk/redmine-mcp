@@ -12,11 +12,14 @@ func cleanEnv(t *testing.T) {
 		"REDMINE_URL", "REDMINE_API_KEY", "REDMINE_INSECURE", "REDMINE_READ_ONLY",
 		"REDMINE_TIMEOUT", "REDMINE_META_TTL", "REDMINE_DEFAULT_LIMIT", "REDMINE_MAX_UPLOAD",
 		"REDMINE_TEXT_FORMATTING", "MCP_TRANSPORT", "MCP_ADDR", "MCP_PATH", "MCP_TOKEN",
+		"MCP_UPLOAD_DIR", "MCP_UPLOAD_PATH", "MCP_UPLOAD_TTL",
 	} {
 		t.Setenv(k, "")
 	}
 	t.Setenv("REDMINE_URL", "https://redmine.example.com/")
 	t.Setenv("REDMINE_API_KEY", "secret")
+	// Non-empty so the upload validation runs; tests that want it off set it to "" explicitly.
+	t.Setenv("MCP_UPLOAD_DIR", t.TempDir())
 }
 
 func TestFromEnvDefaults(t *testing.T) {
@@ -51,11 +54,11 @@ func TestFromEnvValidation(t *testing.T) {
 		{name: "bad scheme", env: map[string]string{"REDMINE_URL": "ftp://h"}, want: "http://"},
 		{name: "no host", env: map[string]string{"REDMINE_URL": "https://"}, want: "no host"},
 		{name: "bad transport", env: map[string]string{"MCP_TRANSPORT": "sse"}, want: "MCP_TRANSPORT"},
-		{name: "non-loopback without token", env: map[string]string{"MCP_TRANSPORT": "http", "MCP_ADDR": "0.0.0.0:8080"}, want: "MCP_TOKEN"},
+		{name: "non-loopback without token is allowed", env: map[string]string{"MCP_TRANSPORT": "http", "MCP_ADDR": "0.0.0.0:8080"}, want: ""},
 		{name: "non-loopback with token", env: map[string]string{"MCP_TRANSPORT": "http", "MCP_ADDR": "0.0.0.0:8080", "MCP_TOKEN": "t"}, want: ""},
 		{name: "loopback without token", env: map[string]string{"MCP_TRANSPORT": "http"}, want: ""},
 		{name: "multi loopback without token", env: map[string]string{"MCP_TRANSPORT": "http", "MCP_ADDR": "127.0.0.1:8080, [::1]:8081"}, want: ""},
-		{name: "multi with one non-loopback", env: map[string]string{"MCP_TRANSPORT": "http", "MCP_ADDR": "127.0.0.1:8080,0.0.0.0:9090"}, want: "MCP_TOKEN"},
+		{name: "multi with one non-loopback is allowed", env: map[string]string{"MCP_TRANSPORT": "http", "MCP_ADDR": "127.0.0.1:8080,0.0.0.0:9090"}, want: ""},
 		{name: "multi with token", env: map[string]string{"MCP_TRANSPORT": "http", "MCP_ADDR": "127.0.0.1:8080,0.0.0.0:9090", "MCP_TOKEN": "t"}, want: ""},
 		{name: "missing port", env: map[string]string{"MCP_TRANSPORT": "http", "MCP_ADDR": "127.0.0.1"}, want: "MCP_ADDR"},
 		{name: "empty entries ignored", env: map[string]string{"MCP_TRANSPORT": "http", "MCP_ADDR": " , 127.0.0.1:8080 , "}, want: ""},
@@ -69,6 +72,11 @@ func TestFromEnvValidation(t *testing.T) {
 		{name: "markdown", env: map[string]string{"REDMINE_TEXT_FORMATTING": "markdown"}, want: ""},
 		{name: "bogus format", env: map[string]string{"REDMINE_TEXT_FORMATTING": "asciidoc"}, want: "TEXT_FORMATTING"},
 		{name: "plain http", env: map[string]string{"REDMINE_URL": "http://h"}, want: "", plain: true},
+		{name: "upload path without slash", env: map[string]string{"MCP_TRANSPORT": "http", "MCP_UPLOAD_PATH": "upload"}, want: "MCP_UPLOAD_PATH"},
+		{name: "upload path root", env: map[string]string{"MCP_TRANSPORT": "http", "MCP_UPLOAD_PATH": "/"}, want: "MCP_UPLOAD_PATH"},
+		{name: "upload path collides with mcp", env: map[string]string{"MCP_TRANSPORT": "http", "MCP_UPLOAD_PATH": "/mcp"}, want: "must differ"},
+		{name: "upload ttl negative", env: map[string]string{"MCP_TRANSPORT": "http", "MCP_UPLOAD_TTL": "-1s"}, want: "MCP_UPLOAD_TTL"},
+		{name: "upload disabled by empty dir", env: map[string]string{"MCP_TRANSPORT": "http", "MCP_UPLOAD_DIR": "", "MCP_UPLOAD_PATH": "bad"}, want: ""},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -111,5 +119,24 @@ func TestListenAddrs(t *testing.T) {
 				t.Fatalf("ListenAddrs(%q) = %v, want %v", in, got, want)
 			}
 		}
+	}
+}
+
+func TestUnauthenticatedListenAddr(t *testing.T) {
+	cases := []struct {
+		name, addr, token, want string
+	}{
+		{name: "token set", addr: "0.0.0.0:8080", token: "t", want: ""},
+		{name: "loopback only", addr: "127.0.0.1:8080"},
+		{name: "non-loopback", addr: "0.0.0.0:8080", want: "0.0.0.0:8080"},
+		{name: "mixed", addr: "127.0.0.1:8080,0.0.0.0:9090", want: "0.0.0.0:9090"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			c := &Config{Addr: tc.addr, Token: tc.token}
+			if got := c.UnauthenticatedListenAddr(); got != tc.want {
+				t.Fatalf("UnauthenticatedListenAddr() = %q, want %q", got, tc.want)
+			}
+		})
 	}
 }

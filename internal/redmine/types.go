@@ -122,23 +122,31 @@ type Upload struct {
 	Filename string `json:"filename,omitempty"`
 }
 
+// CustomFieldValue is one custom field in a write request. Redmine ignores unknown ids; a
+// multi-value field takes a JSON array, which is why Value is `any`.
+type CustomFieldValue struct {
+	ID    int `json:"id"`
+	Value any `json:"value"`
+}
+
 // IssueWrite is the request body for create and update. nil means "unchanged".
 type IssueWrite struct {
-	ProjectID      *int     `json:"project_id,omitempty"`
-	TrackerID      *int     `json:"tracker_id,omitempty"`
-	StatusID       *int     `json:"status_id,omitempty"`
-	PriorityID     *int     `json:"priority_id,omitempty"`
-	Subject        *string  `json:"subject,omitempty"`
-	Description    *string  `json:"description,omitempty"`
-	AssignedToID   *int     `json:"assigned_to_id,omitempty"`
-	ParentID       *int     `json:"parent_issue_id,omitempty"`
-	StartDate      *string  `json:"start_date,omitempty"`
-	DueDate        *string  `json:"due_date,omitempty"`
-	EstimatedHours *float64 `json:"estimated_hours,omitempty"`
-	DoneRatio      *int     `json:"done_ratio,omitempty"`
-	Notes          *string  `json:"notes,omitempty"`
-	PrivateNotes   *bool    `json:"private_notes,omitempty"`
-	Uploads        []Upload `json:"uploads,omitempty"`
+	ProjectID      *int               `json:"project_id,omitempty"`
+	TrackerID      *int               `json:"tracker_id,omitempty"`
+	StatusID       *int               `json:"status_id,omitempty"`
+	PriorityID     *int               `json:"priority_id,omitempty"`
+	Subject        *string            `json:"subject,omitempty"`
+	Description    *string            `json:"description,omitempty"`
+	AssignedToID   *int               `json:"assigned_to_id,omitempty"`
+	ParentID       *int               `json:"parent_issue_id,omitempty"`
+	StartDate      *string            `json:"start_date,omitempty"`
+	DueDate        *string            `json:"due_date,omitempty"`
+	EstimatedHours *float64           `json:"estimated_hours,omitempty"`
+	DoneRatio      *int               `json:"done_ratio,omitempty"`
+	Notes          *string            `json:"notes,omitempty"`
+	PrivateNotes   *bool              `json:"private_notes,omitempty"`
+	Uploads        []Upload           `json:"uploads,omitempty"`
+	CustomFields   []CustomFieldValue `json:"custom_fields,omitempty"`
 }
 
 // TimeWrite is the request body for POST /time_entries.json.

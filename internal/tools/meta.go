@@ -32,6 +32,11 @@ func (d *Deps) whoami(ctx context.Context, _ struct{}) (string, error) {
 		b.WriteString("user names: available\n")
 	}
 	fmt.Fprintf(&b, "content format: %s\n", d.TextFormat)
+	if d.Upload != nil && d.Upload.Enabled() {
+		fmt.Fprintf(&b, "staging: %s -> %s (ttl %s)\n", d.UploadPath, d.Upload.Dir(), d.Upload.TTL())
+	} else {
+		b.WriteString("staging: disabled\n")
+	}
 	return b.String(), nil
 }
 

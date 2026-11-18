@@ -19,6 +19,7 @@ import (
 	"redmine-mcp/internal/config"
 	"redmine-mcp/internal/redmine"
 	"redmine-mcp/internal/tools"
+	"redmine-mcp/internal/upload"
 )
 
 const version = "0.1.0"
@@ -47,8 +48,22 @@ func main() {
 	if cfg.IsPlainHTTP() {
 		logger.Warn("REDMINE_URL is not https: the API key travels in clear text")
 	}
+	if a := cfg.UnauthenticatedListenAddr(); a != "" {
+		logger.Warn("no MCP_TOKEN: HTTP transport is unauthenticated on a non-loopback address", "addr", a)
+	}
 	if cfg.Insecure {
 		logger.Warn("TLS verification is disabled (REDMINE_INSECURE)")
+	}
+
+	// Staging only makes sense where another machine can post to us.
+	var staging *upload.Store
+	if cfg.Transport == "http" && cfg.UploadDir != "" {
+		staging, err = upload.New(cfg.UploadDir, cfg.UploadTTL, cfg.MaxUpload)
+		if err != nil {
+			logger.Error("staging", "err", err)
+			os.Exit(1)
+		}
+		logger.Info("staging", "dir", staging.Dir(), "ttl", staging.TTL(), "path", cfg.UploadPath)
 	}
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
@@ -80,7 +95,13 @@ func main() {
 		ReadOnly:     cfg.ReadOnly,
 		DefaultLimit: cfg.DefaultLimit,
 		TextFormat:   cfg.TextFormat,
+		Upload:       staging,
+		UploadPath:   cfg.UploadPath,
 	})
+
+	if staging != nil {
+		go staging.Run(ctx, func(err error) { logger.Warn("staging sweep", "err", err) })
+	}
 
 	switch cfg.Transport {
 	case "stdio":
@@ -92,6 +113,9 @@ func main() {
 		)
 		mux := http.NewServeMux()
 		mux.Handle(cfg.Path, withToken(cfg.Token, handler))
+		if staging != nil {
+			mux.Handle(cfg.UploadPath, withToken(cfg.Token, staging.Handler(cfg.ReadOnly)))
+		}
 
 		// Bind every address up front so a bad one fails startup, not half the listeners.
 		var listeners []net.Listener
@@ -148,6 +172,12 @@ func instructions(cfg *config.Config, u *redmine.User) string {
 	if cfg.TextFormat == "markdown" {
 		content = "Markdown: **bold**, ## headings, [text](url) links."
 	}
+	extra := ""
+	if cfg.Transport == "http" && cfg.UploadDir != "" {
+		extra = fmt.Sprintf("\n- A file on the client machine: POST it to this server's %s route with the upload helper "+
+			"(`skills/redmine-mcp/scripts/mcp_upload.py`), then pass the returned id as attach_upload_ids. "+
+			"Never base64 a file into a tool call.", cfg.UploadPath)
+	}
 	return fmt.Sprintf(`Redmine at %s. Signed in as %s. Mode: %s.
 Content format: %s
 - Issue ids are integers; chain calls with the ids printed in results.
@@ -155,8 +185,8 @@ Content format: %s
 - search_issues defaults to open issues. Use q for full-text search over descriptions and notes; q cannot be combined with filters.
 - Prefer a small limit and summarize; paginate with offset only when the user needs more.
 - update_issue needs confirm: true to close an issue or replace its description.
-- After a create or update, show the issue URL to the user.`,
-		cfg.URL, u.Login, mode, content)
+- After a create or update, show the issue URL to the user.%s`,
+		cfg.URL, u.Login, mode, content, extra)
 }
 
 func withToken(token string, next http.Handler) http.Handler {

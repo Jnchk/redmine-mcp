@@ -54,6 +54,9 @@ internal/tools/                MCP layer: schema in, compact text out
     meta.go                    whoami, list_projects, list_metadata
     time.go                    log_time, list_time_entries
 internal/format/format.go      table/field rendering, truncation
+internal/upload/               client-side staging (HTTP only; no MCP types)
+    store.go                   Save/Claim/Remove/Sweep, id and name handling
+    handler.go                 POST /upload route
 docs/00_basic_design.md        this file
 ```
 
@@ -117,7 +120,10 @@ Environment first (matches how MCP clients pass credentials), a few flags for tr
 | `MCP_TRANSPORT` / `--transport` | `stdio` | `stdio` or `http`. |
 | `MCP_ADDR` / `--addr` | `127.0.0.1:8080` | HTTP listen address(es), comma-separated. |
 | `MCP_PATH` | `/mcp` | HTTP endpoint path. |
-| `MCP_TOKEN` | — | If set, required as `Authorization: Bearer <token>`. **Mandatory** when any `MCP_ADDR` entry is not loopback. |
+| `MCP_TOKEN` | — | If set, every HTTP request must send `Authorization: Bearer <token>`. Optional: a non-loopback listener without a token is allowed and logs a warning. |
+| `MCP_UPLOAD_DIR` | `$TMPDIR/redmine-mcp-uploads` | Staging directory for client-side uploads; **one per instance**. Explicitly empty disables the route. |
+| `MCP_UPLOAD_PATH` | `/upload` | Upload route path; must start with `/`, not be `/`, and differ from `MCP_PATH`. |
+| `MCP_UPLOAD_TTL` | `15m` | How long an unclaimed upload survives; must be positive. |
 | `--read-only` | — | Flag equivalent of `REDMINE_READ_ONLY`. |
 
 Startup sequence:
@@ -165,12 +171,16 @@ sort (default "updated_on:desc"), limit, offset, q, raw
 
 `get_issue`: `id` or `ids []int` (fetched sequentially; the list is normally short). `include`: `journals`, `attachments`, `relations`, `children` (default all).
 
-`update_issue`: `id`, `status`, `assignee`, `priority`, `tracker`, `subject`, `description`, `notes`, `private_notes`, `progress`, `attach_paths []string`, `confirm bool`.
+`update_issue`: `id`, `status`, `assignee`, `priority`, `tracker`, `subject`, `description`, `notes`, `private_notes`, `progress`, `attach_paths []string`, `attach_upload_ids []string`, `custom_fields`, `confirm bool`.
 `confirm: true` is required for the two irreversible moves: moving the issue into a status whose `is_closed` is true, and replacing the description (the old text is lost). An empty update is rejected. Assignee, priority, tracker and progress changes do not need confirmation, or the tool becomes unusable in practice.
 
-`create_issue`: `project` (required), `subject` (required), `description`, `tracker`, `priority`, `assignee`, `status`, `parent`, `start_date`, `due_date`, `estimated_hours`, `attach_paths`.
+`create_issue`: `project` (required), `subject` (required), `description`, `tracker`, `priority`, `assignee`, `status`, `parent`, `start_date`, `due_date`, `estimated_hours`, `attach_paths`, `attach_upload_ids`, `custom_fields`.
 
 `attach_paths` are **local paths on the process host** (the MCP client's machine for stdio; the server's machine for HTTP). Document that in the tool description. Uploads are read with a size cap (`REDMINE_MAX_UPLOAD`, default 25 MiB) and streamed to `POST /uploads.json` as `application/octet-stream`.
+
+`attach_upload_ids` are ids returned by the HTTP upload route (`MCP_UPLOAD_PATH`), for files that live on the **client** machine. They are single-use, expire after `MCP_UPLOAD_TTL`, and are rejected when the route is disabled or the transport is stdio. Design: `01_staging_upload.md`.
+
+`custom_fields` is `[{id, value}]`. Some projects make a custom field mandatory (e.g. `功能模块`), and Redmine rejects the create with `422 ... 不能为空字符` until it is set. There is no API that lists a project's field ids for a non-admin, so the id is read from `get_issue raw` output of any existing issue in that project. Multi-value fields are not modelled; use the web UI for those.
 
 ---
 
@@ -259,7 +269,7 @@ Rationale for 1–2: a 25-issue JSON response is ~6–8k tokens; the same lines 
 Traps to encode in code, not in comments:
 
 - **Always suffix `.json`.** Missing it returns HTML with status 200 and the JSON decoder produces a confusing error.
-- **Attachments on update.** `PUT /issues/:id.json` with `issue[uploads]` can replace the attachment set on some versions. Behaviour must be verified against a real 3.4; until then, `attach_paths` on update is implemented as "reference existing attachments by `id` + add the new tokens", and an integration test pins it.
+- **Attachments on update.** `PUT /issues/:id.json` with `issue[uploads]` is **additive on 3.4.x** — verified on a live instance: two successive updates left the earlier attachment in place (`28243` survived the second update; total 2). UTF-8 filenames survive intact. Implemented as `attach_paths` / `attach_upload_ids` on `update_issue`; the tool names every attachment it adds so a regression is visible.
 - **No issue delete endpoint.** "Close" = `status_id` of a status with `is_closed: true`, discovered from `/issue_statuses.json`.
 - **3.4 has no effective "grep description".** `subject=~word` filters subjects only; full text needs `/search.json`. Tool descriptions must say this.
 - **Saved queries are the filter DSL.** `query_id=N` beats reimplementing 30 filter params; surface it.
@@ -292,10 +302,11 @@ Retries: **GET only**, once, on 502/503/504 and on transport errors. Never retry
 ## 9. Security
 
 - API key only from the environment; never in `argv` (visible in `ps`), never in logs, never in tool output. `whoami` shows the login, not the key.
-- HTTP transport: bind `127.0.0.1` by default; refuse to start on a non-loopback address without `MCP_TOKEN`. Bearer check uses `subtle.ConstantTimeCompare`.
+- HTTP transport: bind `127.0.0.1` by default. `MCP_TOKEN` is optional; when set it is required on every request and compared with `subtle.ConstantTimeCompare`. A non-loopback listener without a token is allowed (trusted-LAN deployments) and logs a warning at startup — unauthenticated exposure must be a deliberate choice, never silent.
 - Cross-origin: keep the SDK's default localhost protection; do not disable it.
 - `REDMINE_INSECURE` logs a warning on every start — it is a deliberate downgrade.
-- Attachment paths: read only the given path, cap the size, refuse non-regular files. This is a trust boundary — `attach_paths` are user/model supplied, and for the HTTP transport they read the server's filesystem. Say so in the tool description; a future `REDMINE_UPLOAD_DIR` allowlist is the upgrade path.
+- Attachment paths: read only the given path, cap the size, refuse non-regular files. This is a trust boundary — `attach_paths` are user/model supplied, and for the HTTP transport they read the server's filesystem.
+- Staged uploads: the route grants "stage a file", never "attach a file"; attaching still needs a write tool. Ids are 32 hex chars validated before touching the filesystem, so no network input becomes a path. The staging directory is per instance and per host; a token, when configured, guards the route like `/mcp`.
 - Write guard: `REDMINE_READ_ONLY` is checked in `internal/tools`, once, before dispatch.
 - Reject `http://` Redmine URLs with a warning (not an error — some internal installs).
 
@@ -316,6 +327,9 @@ Definition of done for the first release: `go vet ./...`, `go test ./...` green,
 
 ## 11. Open questions
 
-1. Attachment-on-update semantics on 3.4 — resolve with the integration test before exposing `attach_paths` on update. Until then, create-only attachments are shipped and update returns a clear "not supported yet" error.
+1. ~~Attachment-on-update semantics on 3.4~~ — **resolved**: verified additive on a live 3.4.x instance; see §7. The integration test in §10 remains desirable as a regression guard, not as a blocker.
 2. Whether `private_notes` exists on 3.4's issue API — test against the container; if unsupported, drop the field and stop advertising it.
 3. Whether to add a `--server <name>` config-file mode later. Deliberately deferred; one process per server covers the real use case.
+4. Client-side uploads (file on the client machine, HTTP transport): **implemented** — see
+   `01_staging_upload.md` (staging route + `attach_upload_ids` + Python helper). §3, §4 and §9 above are
+   the contract.

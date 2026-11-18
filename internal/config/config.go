@@ -5,6 +5,7 @@ import (
 	"net"
 	"net/url"
 	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
@@ -26,6 +27,11 @@ type Config struct {
 	Addr      string
 	Path      string
 	Token     string
+
+	// Client-side upload staging (HTTP transport only).
+	UploadDir  string
+	UploadPath string
+	UploadTTL  time.Duration
 }
 
 func FromEnv() (*Config, error) {
@@ -37,6 +43,9 @@ func FromEnv() (*Config, error) {
 		Path:       env("MCP_PATH", "/mcp"),
 		Token:      os.Getenv("MCP_TOKEN"),
 		TextFormat: env("REDMINE_TEXT_FORMATTING", "textile"),
+
+		UploadDir:  uploadDir(),
+		UploadPath: env("MCP_UPLOAD_PATH", "/upload"),
 	}
 	var err error
 	if c.Insecure, err = envBool("REDMINE_INSECURE"); err != nil {
@@ -50,6 +59,12 @@ func FromEnv() (*Config, error) {
 	}
 	if c.MetaTTL, err = envDur("REDMINE_META_TTL", 5*time.Minute); err != nil {
 		return nil, err
+	}
+	if c.UploadTTL, err = envDur("MCP_UPLOAD_TTL", 15*time.Minute); err != nil {
+		return nil, err
+	}
+	if c.UploadTTL == 0 {
+		c.UploadTTL = 15 * time.Minute
 	}
 	n, err := envInt("REDMINE_DEFAULT_LIMIT", 25)
 	if err != nil {
@@ -100,17 +115,23 @@ func (c *Config) Validate() error {
 		if len(addrs) == 0 {
 			return fmt.Errorf("MCP_ADDR contains no addresses")
 		}
-		nonLoopback := ""
 		for _, a := range addrs {
 			if _, _, err := net.SplitHostPort(a); err != nil {
 				return fmt.Errorf("MCP_ADDR %q: %w", a, err)
 			}
-			if nonLoopback == "" && !loopback(a) {
-				nonLoopback = a
-			}
 		}
-		if c.Token == "" && nonLoopback != "" {
-			return fmt.Errorf("MCP_ADDR includes non-loopback %q: set MCP_TOKEN to require a bearer token", nonLoopback)
+		// An unauthenticated non-loopback listener is allowed (trusted LAN deployments); main
+		// warns about it at startup. A token, when set, is always enforced.
+		if c.UploadDir != "" {
+			if !strings.HasPrefix(c.UploadPath, "/") || c.UploadPath == "/" {
+				return fmt.Errorf("MCP_UPLOAD_PATH must start with / and must not be /")
+			}
+			if c.UploadPath == c.Path {
+				return fmt.Errorf("MCP_UPLOAD_PATH must differ from MCP_PATH (%q)", c.Path)
+			}
+			if c.UploadTTL <= 0 {
+				return fmt.Errorf("MCP_UPLOAD_TTL must be positive")
+			}
 		}
 	default:
 		return fmt.Errorf("MCP_TRANSPORT must be stdio or http, got %q", c.Transport)
@@ -132,6 +153,21 @@ func (c *Config) ListenAddrs() []string {
 // IsPlainHTTP reports whether the Redmine URL is unencrypted, for a startup warning.
 func (c *Config) IsPlainHTTP() bool { return strings.HasPrefix(c.URL, "http://") }
 
+// UnauthenticatedListenAddr returns the first non-loopback listener when no bearer token is
+// configured, or "" when every listener is loopback or a token is set. Used for a startup warning:
+// the HTTP transport is reachable but has no authentication.
+func (c *Config) UnauthenticatedListenAddr() string {
+	if c.Token != "" {
+		return ""
+	}
+	for _, a := range c.ListenAddrs() {
+		if !loopback(a) {
+			return a
+		}
+	}
+	return ""
+}
+
 func loopback(addr string) bool {
 	host, _, err := net.SplitHostPort(addr)
 	if err != nil {
@@ -149,6 +185,14 @@ func env(key, def string) string {
 		return v
 	}
 	return def
+}
+
+// uploadDir honours an explicitly empty MCP_UPLOAD_DIR, which disables the staging route.
+func uploadDir() string {
+	if v, ok := os.LookupEnv("MCP_UPLOAD_DIR"); ok {
+		return v
+	}
+	return filepath.Join(os.TempDir(), "redmine-mcp-uploads")
 }
 
 func envBool(key string) (bool, error) {

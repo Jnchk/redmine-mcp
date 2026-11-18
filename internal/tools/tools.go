@@ -8,6 +8,7 @@ import (
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 
 	"redmine-mcp/internal/redmine"
+	"redmine-mcp/internal/upload"
 )
 
 // Deps is everything the tools need. One Deps belongs to one Redmine server.
@@ -17,6 +18,9 @@ type Deps struct {
 	ReadOnly     bool
 	DefaultLimit int
 	TextFormat   string // textile | markdown, for the user-facing hint
+	// Upload stages client files for this instance; nil or disabled under stdio.
+	Upload     *upload.Store
+	UploadPath string // HTTP route, for whoami
 }
 
 func Register(srv *mcp.Server, d *Deps) {
@@ -53,15 +57,21 @@ func Register(srv *mcp.Server, d *Deps) {
 	}, d.getIssue)
 
 	add(srv, &mcp.Tool{
-		Name:        "create_issue",
-		Description: "Create an issue. project and subject are required; tracker, status, priority and assignee accept names or ids. attach_paths are local file paths on the machine running this server.",
+		Name: "create_issue",
+		Description: "Create an issue. project and subject are required; tracker, status, priority and assignee accept names or ids. " +
+			"Attachments: attach_paths are files on the machine running this server; attach_upload_ids are ids returned by POST " +
+			"on the upload route of this same server (single use, they expire). Use attach_upload_ids when the file is on the client machine. " +
+			"custom_fields sets project-required fields by id (find the id in get_issue raw output).",
 		Annotations: write(false),
 	}, d.createIssue)
 
 	add(srv, &mcp.Tool{
 		Name: "update_issue",
 		Description: "Update an issue's fields, status, assignee, progress or attachments, and/or add a comment via notes. " +
-			"Closing the issue or replacing its description requires confirm: true. Attaching files to an existing issue is not supported yet.",
+			"Closing the issue or replacing its description requires confirm: true. " +
+			"Attachments: attach_paths are files on the machine running this server; attach_upload_ids are ids returned by POST " +
+			"on the upload route of this same server (single use). Use attach_upload_ids when the file is on the client machine. " +
+			"custom_fields sets custom fields by id; an empty value clears one.",
 		Annotations: write(true),
 	}, d.updateIssue)
 

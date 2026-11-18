@@ -13,9 +13,11 @@ Full design: [docs/00_basic_design.md](docs/00_basic_design.md).
 ```bash
 go build -o redmine-mcp ./cmd/redmine-mcp
 go test ./...
+python3 -m unittest discover -s skills/redmine-mcp/scripts   # upload helper
 ```
 
-Go 1.26.4. Dependencies: only `github.com/modelcontextprotocol/go-sdk`.
+Go 1.26.4. Dependencies: only `github.com/modelcontextprotocol/go-sdk`. The helper is Python 3.8+,
+standard library only.
 
 ## Configure
 
@@ -33,9 +35,14 @@ Go 1.26.4. Dependencies: only `github.com/modelcontextprotocol/go-sdk`.
 | `MCP_TRANSPORT` | `stdio` | `stdio` or `http` |
 | `MCP_ADDR` | `127.0.0.1:8080` | HTTP listen address(es), comma-separated (`127.0.0.1:8080,10.0.0.5:8080`) |
 | `MCP_PATH` | `/mcp` | HTTP endpoint path |
-| `MCP_TOKEN` | — | bearer token; required for a non-loopback address |
+| `MCP_TOKEN` | — | optional bearer token; when set, every request must send it. A non-loopback listener without one logs a warning |
+| `MCP_UPLOAD_DIR` | `<tmp>/redmine-mcp-uploads` | staging directory, **one per instance** (`/tmp/redmine-mcp-neo`); empty disables the upload route |
+| `MCP_UPLOAD_PATH` | `/upload` | upload route path; must differ from `MCP_PATH` |
+| `MCP_UPLOAD_TTL` | `15m` | how long an unclaimed staged file survives |
 
 Flags: `--transport`, `--addr`, `--read-only` override the env values.
+
+The three `MCP_UPLOAD_*` rows are part of the staging-upload design and are not implemented yet.
 
 On startup the server calls `GET /users/current.json`; if that fails it exits with the reason instead of letting a
 client hit a broken server.
@@ -54,8 +61,11 @@ Streamable HTTP (stateless, JSON responses):
 REDMINE_URL=https://redmine.example.com REDMINE_API_KEY=xxx \
 MCP_TRANSPORT=http MCP_ADDR=127.0.0.1:8080 MCP_TOKEN=change-me ./redmine-mcp
 
-# several listeners; one non-loopback entry makes MCP_TOKEN mandatory
+# several listeners; a non-loopback entry without MCP_TOKEN is allowed but logs a warning
 MCP_TRANSPORT=http MCP_ADDR=127.0.0.1:8080,10.0.0.5:8080 MCP_TOKEN=change-me ./redmine-mcp
+
+# LAN deployment without a token (startup warning, no auth middleware)
+MCP_TRANSPORT=http MCP_ADDR=0.0.0.0:8080 ./redmine-mcp
 ```
 
 ```bash
@@ -85,6 +95,43 @@ Client config (opencode example, stdio):
 }
 ```
 
+## Attachments
+
+`attach_paths` reads a path **on the process host** — the same machine as the client for stdio, the
+server's machine for HTTP. When the client runs elsewhere, stage the file first:
+
+```bash
+# 1) upload: prints one line — the 32-hex staging id
+python3 skills/redmine-mcp/scripts/mcp_upload.py --server redmine --path ./report.pdf
+# 9f1c0b7a4e2d4c3b8a5f6e7d0c1b2a39
+
+# 2) attach: pass the id, not the file
+#    create_issue(..., attach_upload_ids: ["9f1c0b7a4e2d4c3b8a5f6e7d0c1b2a39"])
+```
+
+`--server NAME` picks an entry from the skill's own `config.json` — `~/.config/redmine-mcp/config.json`
+on every platform (copy `skills/redmine-mcp/config.example.json`). It holds `url` and an optional `token`
+and is read only by the helper, so the same script works under any agent. Flags and `REDMINE_MCP_URL` /
+`REDMINE_MCP_TOKEN` override it.
+
+curl equivalent:
+
+```bash
+curl -sS -X POST "http://10.0.0.5:8080/upload?filename=report.pdf" \
+  -H "Authorization: Bearer $MCP_TOKEN" \
+  -H 'Content-Type: application/octet-stream' \
+  --data-binary @report.pdf
+```
+
+| File lives on | Use |
+|---|---|
+| the MCP host (stdio, or a local HTTP server) | `attach_paths` — one call, no staging |
+| another machine | `attach_upload_ids` — stage, then attach |
+
+Rules: the id is **single-use**; unclaimed files expire after `MCP_UPLOAD_TTL` (15m); size is capped by
+`REDMINE_MAX_UPLOAD` (25 MiB); uploads are refused in read-only mode. Design:
+[docs/01_staging_upload.md](docs/01_staging_upload.md).
+
 ## Tools
 
 | Tool | Writes | Notes |
@@ -94,15 +141,14 @@ Client config (opencode example, stdio):
 | `list_metadata` | no | trackers, statuses, priorities, activities, users |
 | `search_issues` | no | filters + `q` full-text + `query_id` saved queries |
 | `get_issue` | no | fields, description, attachments, relations, journals |
-| `create_issue` | yes | optional local file attachments |
-| `update_issue` | yes | fields, status, comment, progress; `confirm: true` to close or replace description |
+| `create_issue` | yes | optional attachments (`attach_paths` / `attach_upload_ids`) and `custom_fields` |
+| `update_issue` | yes | fields, status, comment, progress, attachments, `custom_fields`; `confirm: true` to close or replace description |
 | `log_time` | yes | hours against an issue |
 | `list_time_entries` | no | whose entries are visible depends on permissions |
 
 ## Known limits
 
-- Attaching files to an **existing** issue is not implemented: some Redmine versions replace the whole attachment set
-  on `PUT`, and that has not been verified against a real 3.4 yet.
+- Attaching on update is supported and **verified additive** on a live 3.4.x instance: existing attachments survive. The tool names every attachment it added, so a regression on another instance is visible. Use a test issue for the first run anyway.
 - `private_notes` is sent when requested but 3.4 support is unverified (harmless if ignored).
 - User-name resolution needs an admin API key (`/users.json` is admin-only); otherwise use numeric ids or `me`.
 - `search_issues` with `q` cannot be combined with the other filters — different Redmine endpoint.

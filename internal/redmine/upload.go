@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"net/url"
 	"os"
@@ -25,17 +26,22 @@ func (c *Client) Upload(ctx context.Context, path string) (Upload, error) {
 	if !st.Mode().IsRegular() {
 		return Upload{}, fmt.Errorf("not a regular file: %s", path)
 	}
-	if st.Size() > c.maxUpload {
-		return Upload{}, fmt.Errorf("%s is %d bytes, above the %d byte upload limit", path, st.Size(), c.maxUpload)
+	return c.UploadFile(ctx, filepath.Base(path), f, st.Size())
+}
+
+// UploadFile sends size bytes from r under the given display name and returns the upload token.
+// The name is what Redmine shows; the caller is responsible for sanitising it.
+func (c *Client) UploadFile(ctx context.Context, name string, r io.Reader, size int64) (Upload, error) {
+	if size > c.maxUpload {
+		return Upload{}, fmt.Errorf("%s is %d bytes, above the %d byte upload limit", name, size, c.maxUpload)
 	}
 
-	name := filepath.Base(path)
 	target := c.base + "/uploads.json?filename=" + url.QueryEscape(name)
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, target, f)
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, target, r)
 	if err != nil {
 		return Upload{}, err
 	}
-	req.ContentLength = st.Size()
+	req.ContentLength = size
 	req.Header.Set("X-Redmine-API-Key", c.key)
 	req.Header.Set("Content-Type", "application/octet-stream")
 
@@ -45,7 +51,7 @@ func (c *Client) Upload(ctx context.Context, path string) (Upload, error) {
 	}
 	defer resp.Body.Close()
 
-	var r struct {
+	var out struct {
 		Upload struct {
 			Token string `json:"token"`
 		} `json:"upload"`
@@ -55,11 +61,11 @@ func (c *Client) Upload(ctx context.Context, path string) (Upload, error) {
 		json.NewDecoder(resp.Body).Decode(&b)
 		return Upload{}, parseError(resp.StatusCode, b)
 	}
-	if err := json.NewDecoder(resp.Body).Decode(&r); err != nil {
+	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
 		return Upload{}, fmt.Errorf("redmine: decoding upload response: %w", err)
 	}
-	if r.Upload.Token == "" {
+	if out.Upload.Token == "" {
 		return Upload{}, fmt.Errorf("redmine: upload of %s returned no token", name)
 	}
-	return Upload{Token: r.Upload.Token, Filename: name}, nil
+	return Upload{Token: out.Upload.Token, Filename: name}, nil
 }

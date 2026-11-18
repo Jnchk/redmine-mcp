@@ -2,16 +2,30 @@ package tools
 
 import (
 	"context"
+	"io"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 
 	"redmine-mcp/internal/redmine"
+	"redmine-mcp/internal/upload"
 )
+
+// uploadsSeen counts /uploads.json hits; tests are sequential, so a package counter is enough.
+var uploadsSeen int32
+
+// lastUpdate keeps the last PUT /issues/123.json body for assertions.
+var lastUpdate string
+
+// lastCreate keeps the last POST /issues.json body for assertions.
+var lastCreate string
 
 // fakeRedmine is a minimal 3.4-shaped server for the tool layer.
 func fakeRedmine(t *testing.T) (*httptest.Server, *string) {
@@ -41,9 +55,16 @@ func fakeRedmine(t *testing.T) (*httptest.Server, *string) {
 		w.Write([]byte(`{"time_entry_activities":[{"id":9,"name":"Development","is_default":true}]}`))
 	})
 
+	mux.HandleFunc("/uploads.json", func(w http.ResponseWriter, r *http.Request) {
+		atomic.AddInt32(&uploadsSeen, 1)
+		w.Write([]byte(`{"upload":{"token":"tok-1"}}`))
+	})
+
 	mux.HandleFunc("/issues.json", func(w http.ResponseWriter, r *http.Request) {
 		switch r.Method {
 		case http.MethodPost:
+			body, _ := io.ReadAll(r.Body)
+			lastCreate = string(body)
 			w.WriteHeader(http.StatusCreated)
 			w.Write([]byte(`{"issue":{"id":124,"subject":"new one","project":{"id":1,"name":"Website"},"tracker":{"id":1,"name":"Bug"}}}`))
 			return
@@ -60,6 +81,8 @@ func fakeRedmine(t *testing.T) (*httptest.Server, *string) {
 
 	mux.HandleFunc("/issues/123.json", func(w http.ResponseWriter, r *http.Request) {
 		if r.Method == http.MethodPut {
+			body, _ := io.ReadAll(r.Body)
+			lastUpdate = string(body)
 			w.WriteHeader(http.StatusNoContent)
 			return
 		}
@@ -127,6 +150,9 @@ func TestReadTools(t *testing.T) {
 	if isErr || !strings.Contains(got, "login: alice (Alice Zhang)") || !strings.Contains(got, "user names: available") {
 		t.Fatalf("whoami = %q (error=%v)", got, isErr)
 	}
+	if !strings.Contains(got, "staging: disabled") {
+		t.Fatalf("whoami without staging = %q", got)
+	}
 
 	got, isErr = call(t, cs, "search_issues", map[string]any{"project": "website", "status": "In Progress"})
 	if isErr {
@@ -186,6 +212,128 @@ func TestWriteTools(t *testing.T) {
 	got, isErr = call(t, cs, "update_issue", map[string]any{"id": 123})
 	if !isErr || !strings.Contains(got, "nothing to update") {
 		t.Fatalf("empty update = %q (error=%v)", got, isErr)
+	}
+}
+
+func TestCreateIssueWithStagedUpload(t *testing.T) {
+	rs, _ := fakeRedmine(t)
+	c, _ := redmine.New(rs.URL, "k", time.Second, false, 1<<20)
+	dir := t.TempDir()
+	st, err := upload.New(dir, time.Minute, 1<<20)
+	if err != nil {
+		t.Fatal(err)
+	}
+	e, err := st.Save(strings.NewReader("payload"), "报告.txt")
+	if err != nil {
+		t.Fatal(err)
+	}
+	d := &Deps{C: c, M: redmine.NewMeta(c, time.Minute), DefaultLimit: 25, TextFormat: "textile", Upload: st, UploadPath: "/upload"}
+	cs := connect(t, d)
+
+	atomic.StoreInt32(&uploadsSeen, 0)
+	got, isErr := call(t, cs, "create_issue", map[string]any{
+		"project": "website", "subject": "with file", "attach_upload_ids": []string{e.ID},
+	})
+	if isErr {
+		t.Fatalf("create_issue = %q", got)
+	}
+	if n := atomic.LoadInt32(&uploadsSeen); n != 1 {
+		t.Fatalf("uploads posted = %d, want 1", n)
+	}
+	if _, err := os.Stat(filepath.Join(dir, e.ID)); !os.IsNotExist(err) {
+		t.Fatal("staged directory was not removed")
+	}
+
+	got, isErr = call(t, cs, "create_issue", map[string]any{
+		"project": "website", "subject": "x", "attach_upload_ids": []string{strings.Repeat("a", 32)},
+	})
+	if !isErr || !strings.Contains(got, "not found or expired") {
+		t.Fatalf("unknown id = %q (error=%v)", got, isErr)
+	}
+
+	got, isErr = call(t, cs, "create_issue", map[string]any{
+		"project": "website", "subject": "x", "attach_upload_ids": []string{"nope"},
+	})
+	if !isErr || !strings.Contains(got, "invalid upload id") {
+		t.Fatalf("bad id = %q (error=%v)", got, isErr)
+	}
+}
+
+func TestCreateIssueCustomFields(t *testing.T) {
+	rs, _ := fakeRedmine(t)
+	c, _ := redmine.New(rs.URL, "k", time.Second, false, 1<<20)
+	d := &Deps{C: c, M: redmine.NewMeta(c, time.Minute), DefaultLimit: 25, TextFormat: "textile"}
+	cs := connect(t, d)
+
+	lastCreate = ""
+	got, isErr := call(t, cs, "create_issue", map[string]any{
+		"project":       "website",
+		"subject":       "with custom field",
+		"custom_fields": []map[string]any{{"id": 23, "value": "UTM"}},
+	})
+	if isErr {
+		t.Fatalf("create_issue = %q", got)
+	}
+	if !strings.Contains(lastCreate, `"custom_fields":[{"id":23,"value":"UTM"}]`) {
+		t.Fatalf("POST body = %s", lastCreate)
+	}
+
+	got, isErr = call(t, cs, "create_issue", map[string]any{
+		"project": "website", "subject": "x", "custom_fields": []map[string]any{{"value": "UTM"}},
+	})
+	if !isErr || !strings.Contains(got, "id") {
+		t.Fatalf("missing custom field id = %q (error=%v)", got, isErr)
+	}
+}
+
+func TestUpdateIssueWithStagedUpload(t *testing.T) {
+	rs, _ := fakeRedmine(t)
+	c, _ := redmine.New(rs.URL, "k", time.Second, false, 1<<20)
+	dir := t.TempDir()
+	st, err := upload.New(dir, time.Minute, 1<<20)
+	if err != nil {
+		t.Fatal(err)
+	}
+	e, err := st.Save(strings.NewReader("payload"), "补充.txt")
+	if err != nil {
+		t.Fatal(err)
+	}
+	d := &Deps{C: c, M: redmine.NewMeta(c, time.Minute), DefaultLimit: 25, TextFormat: "textile", Upload: st, UploadPath: "/upload"}
+	cs := connect(t, d)
+
+	lastUpdate = ""
+	atomic.StoreInt32(&uploadsSeen, 0)
+	got, isErr := call(t, cs, "update_issue", map[string]any{
+		"id": 123, "attach_upload_ids": []string{e.ID},
+	})
+	if isErr {
+		t.Fatalf("update_issue = %q", got)
+	}
+	if !strings.Contains(got, "attachment 补充.txt") {
+		t.Fatalf("update_issue = %q, want the attachment named", got)
+	}
+	if n := atomic.LoadInt32(&uploadsSeen); n != 1 {
+		t.Fatalf("uploads posted = %d, want 1", n)
+	}
+	if !strings.Contains(lastUpdate, `"uploads":[{"token":"tok-1"`) {
+		t.Fatalf("PUT body = %s", lastUpdate)
+	}
+	if _, err := os.Stat(filepath.Join(dir, e.ID)); !os.IsNotExist(err) {
+		t.Fatal("staged directory was not removed")
+	}
+}
+
+func TestCreateIssueStagedUploadNeedsHTTP(t *testing.T) {
+	rs, _ := fakeRedmine(t)
+	c, _ := redmine.New(rs.URL, "k", time.Second, false, 1<<20)
+	d := &Deps{C: c, M: redmine.NewMeta(c, time.Minute), DefaultLimit: 25, TextFormat: "textile"}
+	cs := connect(t, d)
+
+	got, isErr := call(t, cs, "create_issue", map[string]any{
+		"project": "website", "subject": "x", "attach_upload_ids": []string{strings.Repeat("a", 32)},
+	})
+	if !isErr || !strings.Contains(got, "HTTP transport") {
+		t.Fatalf("stdio upload = %q (error=%v)", got, isErr)
 	}
 }
 

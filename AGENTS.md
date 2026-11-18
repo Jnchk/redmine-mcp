@@ -1,6 +1,6 @@
 # AGENTS.md
 
-MCP server (Go) exposing one Redmine 3.4+ instance. Design: `docs/00_basic_design.md`. Usage: `README.md`.
+MCP server (Go) exposing one Redmine 3.4+ instance. Design: `docs/00_basic_design.md`. Client-side uploads (designed, not implemented): `docs/01_staging_upload.md`. Usage: `README.md`.
 
 ## Commands
 
@@ -12,6 +12,7 @@ gofmt -w .    # the only formatter; no Makefile, no CI, no golangci config
 
 go test ./internal/tools -run TestWriteTools -v   # single test
 go test ./internal/redmine -run TestResolve       # one rule set
+python3 -m unittest discover -s skills/redmine-mcp/scripts -v   # upload helper
 ```
 
 `go.mod` pins `go 1.26.4`; keep it. Sole direct dependency: `github.com/modelcontextprotocol/go-sdk`.
@@ -27,7 +28,7 @@ go test ./internal/redmine -run TestResolve       # one rule set
 
 ## Architecture boundaries
 
-- `internal/redmine` must not import `mcp`. `internal/tools` must not do HTTP. `internal/format` renders, nothing else.
+- `internal/redmine` must not import `mcp`. `internal/tools` must not do HTTP. `internal/format` renders, nothing else. `internal/upload` owns the staging directory and the `POST` route; it imports no MCP or tool types.
 - New Redmine call: method on `Client` (`internal/redmine`), type in `types.go`, then a tool in `internal/tools`. Never fetch from a tool handler directly.
 - All requests go through `Client.do`: sets `X-Redmine-API-Key`, appends `.json`, retries **GET only** once. Do not retry POST/PUT — it creates duplicate issues.
 - `Meta` is the only name→id path (`Resolve`). Any new filter accepting a name must resolve through it, never match locally.

@@ -4,11 +4,13 @@ import (
 	"context"
 	"fmt"
 	"net/url"
+	"os"
 	"strconv"
 	"strings"
 
 	"redmine-mcp/internal/format"
 	"redmine-mcp/internal/redmine"
+	"redmine-mcp/internal/upload"
 )
 
 type searchIn struct {
@@ -269,18 +271,27 @@ func renderIssue(d *Deps, is *redmine.Issue) string {
 }
 
 type createIn struct {
-	Project        string   `json:"project" jsonschema:"project name, identifier or id (required)"`
-	Subject        string   `json:"subject" jsonschema:"issue subject (required)"`
-	Description    string   `json:"description,omitempty" jsonschema:"issue description; content format is textile unless the server says otherwise"`
-	Tracker        string   `json:"tracker,omitempty" jsonschema:"tracker name or id"`
-	Priority       string   `json:"priority,omitempty" jsonschema:"priority name or id"`
-	Assignee       string   `json:"assignee,omitempty" jsonschema:"user name, login, id, or me"`
-	Status         string   `json:"status,omitempty" jsonschema:"initial status name or id; omit to use the tracker default"`
-	ParentID       int      `json:"parent_issue_id,omitempty" jsonschema:"parent issue id"`
-	StartDate      string   `json:"start_date,omitempty" jsonschema:"YYYY-MM-DD"`
-	DueDate        string   `json:"due_date,omitempty" jsonschema:"YYYY-MM-DD"`
-	EstimatedHours float64  `json:"estimated_hours,omitempty"`
-	AttachPaths    []string `json:"attach_paths,omitempty" jsonschema:"local file paths on the machine running this server"`
+	Project         string          `json:"project" jsonschema:"project name, identifier or id (required)"`
+	Subject         string          `json:"subject" jsonschema:"issue subject (required)"`
+	Description     string          `json:"description,omitempty" jsonschema:"issue description; content format is textile unless the server says otherwise"`
+	Tracker         string          `json:"tracker,omitempty" jsonschema:"tracker name or id"`
+	Priority        string          `json:"priority,omitempty" jsonschema:"priority name or id"`
+	Assignee        string          `json:"assignee,omitempty" jsonschema:"user name, login, id, or me"`
+	Status          string          `json:"status,omitempty" jsonschema:"initial status name or id; omit to use the tracker default"`
+	ParentID        int             `json:"parent_issue_id,omitempty" jsonschema:"parent issue id"`
+	StartDate       string          `json:"start_date,omitempty" jsonschema:"YYYY-MM-DD"`
+	DueDate         string          `json:"due_date,omitempty" jsonschema:"YYYY-MM-DD"`
+	EstimatedHours  float64         `json:"estimated_hours,omitempty"`
+	AttachPaths     []string        `json:"attach_paths,omitempty" jsonschema:"local file paths on the machine running this server"`
+	AttachUploadIDs []string        `json:"attach_upload_ids,omitempty" jsonschema:"ids returned by POST on the upload route; use for files on the client machine (single use)"`
+	CustomFields    []customFieldIn `json:"custom_fields,omitempty" jsonschema:"project-required custom fields, e.g. 功能模块 (id 23); Redmine ignores ids it does not use"`
+}
+
+// customFieldIn is one custom field in create/update requests. Multi-value fields are not
+// modelled: pass the single value Redmine expects, or use the web UI.
+type customFieldIn struct {
+	ID    int `json:"id" jsonschema:"custom field id (required); read it from get_issue raw output"`
+	Value any `json:"value" jsonschema:"value as Redmine stores it; a list field may need an array, e.g. [\"UTM\"]"`
 }
 
 func (d *Deps) createIssue(ctx context.Context, in createIn) (string, error) {
@@ -343,6 +354,12 @@ func (d *Deps) createIssue(ctx context.Context, in createIn) (string, error) {
 		}
 		w.StatusID = &n.ID
 	}
+	for _, cf := range in.CustomFields {
+		if cf.ID <= 0 {
+			return "", fmt.Errorf("custom_fields: id is required")
+		}
+		w.CustomFields = append(w.CustomFields, redmine.CustomFieldValue{ID: cf.ID, Value: cf.Value})
+	}
 
 	for _, path := range in.AttachPaths {
 		up, err := d.C.Upload(ctx, path)
@@ -351,6 +368,14 @@ func (d *Deps) createIssue(ctx context.Context, in createIn) (string, error) {
 		}
 		w.Uploads = append(w.Uploads, up)
 	}
+
+	staged, used, err := d.claimUploads(ctx, in.AttachUploadIDs)
+	if err != nil {
+		d.releaseUploads(used)
+		return "", err
+	}
+	defer d.releaseUploads(used)
+	w.Uploads = append(w.Uploads, staged...)
 
 	is, err := d.C.CreateIssue(ctx, w)
 	if err != nil {
@@ -371,18 +396,20 @@ func (d *Deps) createIssue(ctx context.Context, in createIn) (string, error) {
 }
 
 type updateIn struct {
-	ID           int      `json:"id" jsonschema:"issue id (required)"`
-	Status       string   `json:"status,omitempty" jsonschema:"new status name or id"`
-	Assignee     string   `json:"assignee,omitempty" jsonschema:"user name, login, id, or me"`
-	Priority     string   `json:"priority,omitempty" jsonschema:"priority name or id"`
-	Tracker      string   `json:"tracker,omitempty" jsonschema:"tracker name or id"`
-	Subject      string   `json:"subject,omitempty" jsonschema:"replacement subject"`
-	Description  string   `json:"description,omitempty" jsonschema:"replacement description; requires confirm because it overwrites the old text"`
-	Notes        string   `json:"notes,omitempty" jsonschema:"comment to add to the issue"`
-	PrivateNotes *bool    `json:"private_notes,omitempty" jsonschema:"mark the accompanying note as private"`
-	Progress     *int     `json:"progress,omitempty" jsonschema:"done ratio 0-100"`
-	AttachPaths  []string `json:"attach_paths,omitempty" jsonschema:"not supported on update yet"`
-	Confirm      bool     `json:"confirm,omitempty" jsonschema:"required to close the issue or replace its description"`
+	ID              int             `json:"id" jsonschema:"issue id (required)"`
+	Status          string          `json:"status,omitempty" jsonschema:"new status name or id"`
+	Assignee        string          `json:"assignee,omitempty" jsonschema:"user name, login, id, or me"`
+	Priority        string          `json:"priority,omitempty" jsonschema:"priority name or id"`
+	Tracker         string          `json:"tracker,omitempty" jsonschema:"tracker name or id"`
+	Subject         string          `json:"subject,omitempty" jsonschema:"replacement subject"`
+	Description     string          `json:"description,omitempty" jsonschema:"replacement description; requires confirm because it overwrites the old text"`
+	Notes           string          `json:"notes,omitempty" jsonschema:"comment to add to the issue"`
+	PrivateNotes    *bool           `json:"private_notes,omitempty" jsonschema:"mark the accompanying note as private"`
+	Progress        *int            `json:"progress,omitempty" jsonschema:"done ratio 0-100"`
+	AttachPaths     []string        `json:"attach_paths,omitempty" jsonschema:"add files that live on the machine running this server"`
+	AttachUploadIDs []string        `json:"attach_upload_ids,omitempty" jsonschema:"add files staged via the upload route; use for files on the client machine (single use)"`
+	CustomFields    []customFieldIn `json:"custom_fields,omitempty" jsonschema:"set custom fields by id, e.g. 功能模块 (23); an empty value clears the field"`
+	Confirm         bool            `json:"confirm,omitempty" jsonschema:"required to close the issue or replace its description"`
 }
 
 func (d *Deps) updateIssue(ctx context.Context, in updateIn) (string, error) {
@@ -392,14 +419,30 @@ func (d *Deps) updateIssue(ctx context.Context, in updateIn) (string, error) {
 	if in.ID <= 0 {
 		return "", fmt.Errorf("id is required")
 	}
-	if len(in.AttachPaths) > 0 {
-		return "", fmt.Errorf("attaching to an existing issue is not supported yet: some Redmine versions replace the existing attachment set on update; add attachments when creating the issue or use the web UI")
-	}
 
 	var (
 		w       redmine.IssueWrite
 		changes []string
 	)
+
+	for _, path := range in.AttachPaths {
+		up, err := d.C.Upload(ctx, path)
+		if err != nil {
+			return "", err
+		}
+		w.Uploads = append(w.Uploads, up)
+		changes = append(changes, "attachment "+up.Filename)
+	}
+	staged, used, err := d.claimUploads(ctx, in.AttachUploadIDs)
+	if err != nil {
+		d.releaseUploads(used)
+		return "", err
+	}
+	defer d.releaseUploads(used)
+	for _, up := range staged {
+		w.Uploads = append(w.Uploads, up)
+		changes = append(changes, "attachment "+up.Filename)
+	}
 
 	if in.Status != "" {
 		n, err := d.M.Resolve(ctx, redmine.KStatus, in.Status)
@@ -464,6 +507,13 @@ func (d *Deps) updateIssue(ctx context.Context, in updateIn) (string, error) {
 		w.DoneRatio = in.Progress
 		changes = append(changes, fmt.Sprintf("progress -> %d%%", *in.Progress))
 	}
+	for _, cf := range in.CustomFields {
+		if cf.ID <= 0 {
+			return "", fmt.Errorf("custom_fields: id is required")
+		}
+		w.CustomFields = append(w.CustomFields, redmine.CustomFieldValue{ID: cf.ID, Value: cf.Value})
+		changes = append(changes, fmt.Sprintf("custom field %d -> %v", cf.ID, cf.Value))
+	}
 	if in.Notes != "" {
 		w.Notes = &in.Notes
 		w.PrivateNotes = in.PrivateNotes
@@ -484,6 +534,53 @@ func nameOr(n redmine.Named, fallback string) string {
 		return n.Name
 	}
 	return fallback
+}
+
+// claimUploads reserves and uploads each staging id, de-duplicating first. A claimed id is
+// single-use; the caller must release them whether the issue is created or not.
+func (d *Deps) claimUploads(ctx context.Context, ids []string) ([]redmine.Upload, []string, error) {
+	if len(ids) == 0 {
+		return nil, nil, nil
+	}
+	if d.Upload == nil || !d.Upload.Enabled() {
+		return nil, nil, fmt.Errorf("attach_upload_ids needs the HTTP transport with MCP_UPLOAD_DIR set; use attach_paths instead")
+	}
+	seen := make(map[string]bool, len(ids))
+	var ups []redmine.Upload
+	var used []string
+	for _, id := range ids {
+		if seen[id] {
+			continue
+		}
+		seen[id] = true
+		if !upload.ValidID(id) {
+			return nil, used, fmt.Errorf("invalid upload id %q: expected 32 hex characters", id)
+		}
+		e, err := d.Upload.Claim(id)
+		if err != nil {
+			return nil, used, fmt.Errorf("upload id %s not found or expired (MCP_UPLOAD_TTL %s); re-upload the file", id, d.Upload.TTL())
+		}
+		used = append(used, id)
+		f, err := os.Open(e.Path)
+		if err != nil {
+			return nil, used, fmt.Errorf("upload id %s: %w", id, err)
+		}
+		up, err := d.C.UploadFile(ctx, e.Filename, f, e.Size)
+		f.Close()
+		if err != nil {
+			return nil, used, err
+		}
+		ups = append(ups, up)
+	}
+	return ups, used, nil
+}
+
+// releaseUploads deletes claimed staging directories. Failure is not worth reporting: the sweeper
+// removes anything left behind.
+func (d *Deps) releaseUploads(ids []string) {
+	for _, id := range ids {
+		_ = d.Upload.Remove(id)
+	}
 }
 
 // rawClip bounds the raw JSON mode so a huge response cannot eat the context.

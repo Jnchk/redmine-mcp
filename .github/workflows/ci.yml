@@ -23,3 +23,8 @@ jobs:
         run: go vet ./...
       - name: test
         run: go test -race ./...
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: upload helper tests
+        run: python3 -m unittest discover -s skills/redmine-mcp/scripts -v
